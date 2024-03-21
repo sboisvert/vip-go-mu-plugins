@@ -23,17 +23,23 @@ class WPCOM_VIP_CLI_Command extends WP_CLI_Command {
 
 	/**
 	 * Disable term counting so that terms are not all recounted after every term operation
+  	 * Disable adding data to the object cache
 	 */
 	public static function start_bulk_operation() {
 		// Disable term count updates for speed
 		wp_defer_term_counting( true );
+		//disable adding data to object cache (in-memory and memcache/redis)
+		wp_suspend_cache_addition( true );
 	}
 
 	/**
 	 * Re-enable Term counting and trigger a term counting operation to update all term counts
+  	 * Re-enable adding data to the object cache
 	 */
 	public static function end_bulk_operation() {
 		// This will also trigger a term count.
 		wp_defer_term_counting( false );
+		//re-enable adding data to object cache (in-memory and memcache/redis)
+		wp_suspend_cache_addition( false );
 	}
 }
