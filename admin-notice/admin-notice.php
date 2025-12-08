@@ -22,45 +22,22 @@ add_action( 'wp_ajax_dismiss_vip_notice', [ $admin_notice_controller, 'dismiss_v
 add_action( 'admin_init', [ $admin_notice_controller, 'maybe_clean_stale_dismissed_notices' ] );
 add_action(
 	'init',
-	function() use ( $admin_notice_controller ) {
+	function () use ( $admin_notice_controller ) {
 		do_action( 'vip_admin_notice_init', $admin_notice_controller );
 	}
 );
 
-// Old WP version w/o pinned Jetpack version
 add_action(
 	'vip_admin_notice_init',
-	function( $admin_notice_controller ) {
-		global $wp_version;
-		$message = "We've noticed that you are running WordPress {$wp_version}, which is an outdated version. This prevents you from running the latest version of Jetpack, as the current version of Jetpack only supports 5.9 and up. Please upgrade to the most recent WordPress version to use the latest features of Jetpack.";
-
+	function ( $admin_notice_controller ) {
+		$message = 'Heads up! Your site is using a deprecated plugin <a href="https://github.com/Automattic/jetpack-force-2fa/">jetpack-force-2fa</a>. This functionality is already included in Jetpack as of version 13.5. Please remove the plugin to avoid potential conflicts with future Jetpack updates.';
 		$admin_notice_controller->add(
 			new Admin_Notice(
 				$message,
 				[
-					new Expression_Condition( version_compare( $wp_version, '5.9', '<' ) ),
-					new Expression_Condition( ! defined( 'VIP_JETPACK_PINNED_VERSION' ) ),
+					new Expression_Condition( class_exists( 'Jetpack_Force_2FA' ) && class_exists( 'Jetpack' ) && defined( 'JETPACK__VERSION' ) && version_compare( JETPACK__VERSION, '13.5', '>=' ) ),
 				],
-				'old-wp-versions',
-				'error'
-			)
-		);
-	}
-);
-
-// Debug Bar deprecation notice
-add_action(
-	'vip_admin_notice_init',
-	function( $admin_notice_controller ) {
-		$message = 'Debug Bar will no longer be included in VIP MU Plugins as of January 31, 2023. Please use <a href="https://docs.wpvip.com/technical-references/query-monitor/" target="_blank">Query Monitor</a> instead for diagnostics. For more information, see <a href="https://lobby.vip.wordpress.com/2022/12/14/deprecation-notice-debug-bar-january-31-2023/" target="_blank">our Lobby post</a>.';
-
-		$admin_notice_controller->add(
-			new Admin_Notice(
-				$message,
-				[
-					new Expression_Condition( true === apply_filters( 'debug_bar_enable', false ) ),
-				],
-				'debug-bar-deprecation',
+				'deprecated-standalone-jetpack-2fa-plugin',
 				'error'
 			)
 		);

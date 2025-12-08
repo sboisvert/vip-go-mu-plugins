@@ -34,6 +34,10 @@ class Context {
 		// phpcs:enable WordPress.VIP.SuperGlobalInputUsage.AccessDetected
 	}
 
+	public static function is_fedramp(): bool {
+		return defined( 'VIP_IS_FEDRAMP' ) && true === constant( 'VIP_IS_FEDRAMP' );
+	}
+
 	/**
 	 * Begin: Core-specific contexts
 	 */
@@ -70,5 +74,35 @@ class Context {
 
 	public static function is_installing() {
 		return defined( 'WP_INSTALLING' ) && true === constant( 'WP_INSTALLING' );
+	}
+
+	public static function is_prom_endpoint_request(): bool {
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- the value is used only for strict comparison
+		$request_uri = $_SERVER['REQUEST_URI'] ?? '';
+		return '/.vip-prom-metrics' === $request_uri;
+	}
+
+	/**
+	 * Get the application slug.
+	 *
+	 * @return string The application slug, or empty string if not defined.
+	 */
+	public static function get_app_slug(): string {
+		if ( defined( 'VIP_GO_APP_SLUG' ) ) {
+			return constant( 'VIP_GO_APP_SLUG' );
+		}
+		return '';
+	}
+
+	/**
+	 * Get the application environment.
+	 *
+	 * @return string The application environment, or empty string if not defined.
+	 */
+	public static function get_environment(): string {
+		if ( defined( 'VIP_GO_APP_ENVIRONMENT' ) ) {
+			return constant( 'VIP_GO_APP_ENVIRONMENT' );
+		}
+		return '';
 	}
 }

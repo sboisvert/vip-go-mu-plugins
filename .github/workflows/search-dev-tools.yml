@@ -1,7 +1,10 @@
-name: CI
+name: Search Dev Tools
 
 on:
   push:
+    paths:
+    - 'search/search-dev-tools/**'
+    - '.github/workflows/search-dev-tools.yml'
   workflow_dispatch:
 
 concurrency:
@@ -13,18 +16,18 @@ permissions:
 
 jobs:
   search-dev-tools:
-    name: Build Search Dev Tools
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Check out source code
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v6.0.0
         with:
           token: ${{ secrets.WPCOM_VIP_BOT_TOKEN }}
 
       - name: Setup Node
-        uses: actions/setup-node@v3.6.0
+        uses: actions/setup-node@v6.0.0
         with:
           node-version: 'lts/*'
           cache: npm
@@ -42,7 +45,7 @@ jobs:
         run: |
           if [ "$(git diff --ignore-space-at-eol search/search-dev-tools/ | wc -l)" -gt "0" ]; then
             echo "::warning::There are changes in the built files."
-            if [ "${{ github.event.head_commit.committer.email }}" != "no-reply@automattic.com" ]; then
+            if [ "${COMMITTER_EMAIL}" != "no-reply@automattic.com" ]; then
               git config user.name "WordPress VIP Bot"
               git config user.email no-reply@automattic.com
               git config push.default "current"
@@ -56,3 +59,4 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.WPCOM_VIP_BOT_TOKEN }}
+          COMMITTER_EMAIL: ${{ github.event.head_commit.committer.email }}

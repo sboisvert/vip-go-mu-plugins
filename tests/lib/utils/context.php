@@ -13,6 +13,11 @@ class Context_Test extends TestCase {
 		Constant_Mocker::clear();
 	}
 
+	public function tearDown(): void {
+		Constant_Mocker::clear();
+		parent::tearDown();
+	}
+
 	public function test__is_cache_healthcheck__nope() {
 		$_SERVER['REQUEST_URI'] = '/not-healthcheck-path';
 
@@ -201,5 +206,33 @@ class Context_Test extends TestCase {
 		$actual_result = Context::is_installing();
 
 		$this->assertTrue( $actual_result );
+	}
+
+	public function test__get_app_slug__not_defined() {
+		$actual_result = Context::get_app_slug();
+
+		$this->assertSame( '', $actual_result );
+	}
+
+	public function test__get_app_slug__returns_value() {
+		Constant_Mocker::define( 'VIP_GO_APP_SLUG', 'example-app' );
+
+		$actual_result = Context::get_app_slug();
+
+		$this->assertSame( 'example-app', $actual_result );
+	}
+
+	public function test__get_environment__not_defined() {
+		$actual_result = Context::get_environment();
+
+		$this->assertSame( '', $actual_result );
+	}
+
+	public function test__get_environment__returns_value() {
+		Constant_Mocker::define( 'VIP_GO_APP_ENVIRONMENT', 'develop' );
+
+		$actual_result = Context::get_environment();
+
+		$this->assertSame( 'develop', $actual_result );
 	}
 }

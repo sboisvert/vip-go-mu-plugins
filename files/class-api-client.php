@@ -1,5 +1,7 @@
 <?php
 
+// phpcs:disable Universal.Files.SeparateFunctionsFromOO.Mixed
+
 namespace Automattic\VIP\Files;
 
 use WP_Error;
@@ -9,7 +11,7 @@ require_once __DIR__ . '/class-api-cache.php';
 
 function new_api_client() {
 	return new API_Client(
-		'https://' . constant( 'FILE_SERVICE_ENDPOINT' ),
+		constant( 'FILE_SERVICE_URI' ),
 		constant( 'FILES_CLIENT_SITE_ID' ),
 		constant( 'FILES_ACCESS_TOKEN' ),
 		API_Cache::get_instance()
@@ -37,10 +39,10 @@ class API_Client {
 		$this->files_token   = $files_token;
 
 		// Add some context to the UA to simplify debugging issues
-		if ( defined( 'DOING_CRON' ) && DOING_CRON ) {
+		if ( defined( 'DOING_CRON' ) && constant( 'DOING_CRON' ) ) {
 			// current_filter may not be totally accurate but still better than nothing
 			$current_context = sprintf( 'Cron (%s)', current_filter() );
-		} elseif ( defined( 'WP_CLI' ) && WP_CLI ) {
+		} elseif ( defined( 'WP_CLI' ) && constant( 'WP_CLI' ) ) {
 			$current_context = 'WP_CLI';
 		} else {
 			$current_context = add_query_arg( [] );
@@ -197,13 +199,34 @@ class API_Client {
 			return $file;
 		}
 
-		$tmp_file = $this->cache->create_tmp_file();
+		// calculate timeout
+		$info     = array();
+		$response = $this->is_file( $file_path, $info );
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+
+		if ( false === $response ) {
+			/* translators: 1: file path */
+			return new WP_Error( 'file-not-found', sprintf( __( 'The requested file `%1$s` does not exist (response code: 404)' ), $file_path ) );
+		}
+
+		$request_timeout = $this->calculate_upload_timeout( $info['size'] ?? 0 );
+		$tmp_file        = $this->cache->create_tmp_file();
 
 		// Request args for wp_remote_request()
 		$request_args = [
 			'stream'   => true,
 			'filename' => $tmp_file,
+			'timeout'  => $request_timeout,
 		];
+
+		// Prevent webp => jpg transform from running
+		if ( str_ends_with( strtok( $file_path, '?' ), '.webp' ) ) {
+			$request_args['headers'] = [
+				'Accept' => 'image/webp',
+			];
+		}
 
 		// not in cache so get from API
 		$response = $this->call_api( $file_path, 'GET', $request_args );
@@ -254,6 +277,11 @@ class API_Client {
 		return true;
 	}
 
+	/**
+	 * @param string $file_path File path to check
+	 * @param array|null &$info Optional variable to store file info
+	 * @return WP_Error|bool    true if file exists, false if not, or WP_Error on failure
+	 */
 	public function is_file( $file_path, &$info = null ) {
 		// check in cache first
 		$stats = $this->cache->get_file_stats( $file_path );

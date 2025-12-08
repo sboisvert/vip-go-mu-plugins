@@ -5,6 +5,7 @@
 
 namespace Automattic\VIP\Support_User;
 
+use Automattic\VIP\Utils\Context;
 use WP_User;
 
 /**
@@ -57,7 +58,6 @@ class Role {
 		}
 
 		return $instance;
-
 	}
 
 	/**
@@ -181,8 +181,12 @@ class Role {
 
 		update_option( $option_name, self::VERSION );
 		$this->error_log( 'VIP Support Role: Done upgrade, now at version ' . self::VERSION );
-
 	}
 }
 
-Role::init();
+// Skip the Role initialization if WP_INSTALLING is defined.
+// This prevents the Role from being initialized during the installation process, which could lead to issues if
+// the role is not yet fully set up or if the database is not ready for it.
+if ( ! Context::is_installing() ) {
+	Role::init();
+}

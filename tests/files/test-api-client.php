@@ -5,13 +5,11 @@ namespace Automattic\VIP\Files;
 use DMS\PHPUnitExtensions\ArraySubset\ArraySubsetAsserts;
 use WP_Error;
 use WP_UnitTestCase;
-use Yoast\PHPUnitPolyfills\Polyfills\AssertionRenames;
 
 require_once __DIR__ . '/../../files/class-api-client.php';
 
 class API_Client_Test extends WP_UnitTestCase {
 	use ArraySubsetAsserts;
-	use AssertionRenames;
 
 	/** @var API_Client|null */
 	private $api_client;
@@ -45,8 +43,18 @@ class API_Client_Test extends WP_UnitTestCase {
 		);
 	}
 
+	public function mock_is_file_response( $mocked_response ): void {
+		add_filter( 'pre_http_request', function ( $response, $args ) use ( $mocked_response ) {
+			if ( isset( $args['headers']['X-Action'] ) && 'file_exists' === $args['headers']['X-Action'] ) {
+				return $mocked_response;
+			}
+
+			return $response;
+		}, 1000, 2 );
+	}
+
 	public function mock_http_response( $mocked_response ) {
-		add_filter( 'pre_http_request', function( $response, $args, $url ) use ( $mocked_response ) {
+		add_filter( 'pre_http_request', function ( $response, $args, $url ) use ( $mocked_response ) {
 			$this->http_requests[] = [
 				'url'  => $url,
 				'args' => $args,
@@ -164,7 +172,7 @@ class API_Client_Test extends WP_UnitTestCase {
 	}
 
 	public function test__call_api__user_agent() {
-		$original_request_uri   = $_SERVER['REQUEST_URI']; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- test context; this is safe 
+		$original_request_uri   = $_SERVER['REQUEST_URI']; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- test context; this is safe
 		$_SERVER['REQUEST_URI'] = ' /path?query';
 
 		// Re-initialize so re-generate UA string
@@ -361,10 +369,18 @@ class API_Client_Test extends WP_UnitTestCase {
 	 * @dataProvider get_test_data__get_file
 	 */
 	public function test__get_file( $mocked_response, $expected_result ) {
+		$this->mock_is_file_response( [
+			'response' => [
+				'code' => 200,
+			],
+			'body'     => wp_json_encode( [
+				'size' => 12345,
+			] ),
+		] );
 		$this->mock_http_response( $mocked_response );
 
 		$file = $this->api_client->get_file( '/wp-content/uploads/get_file.jpg' );
-		
+
 		if ( is_wp_error( $file ) ) {
 			$actual_result = $file;
 		} else {
@@ -376,6 +392,15 @@ class API_Client_Test extends WP_UnitTestCase {
 	}
 
 	public function test__get_file__validate_request() {
+		$this->mock_is_file_response( [
+			'response' => [
+				'code' => 200,
+			],
+			'body'     => wp_json_encode( [
+				'size' => 12345,
+			] ),
+		] );
+
 		$this->mock_http_response( [] ); // don't care about the response
 
 		$this->api_client->get_file( '/wp-content/uploads/get/this/file.jpg' );

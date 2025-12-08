@@ -1,4 +1,4 @@
-<?php
+<?php declare(strict_types = 1);
 /**
  * HTTP API request output for HTML pages.
  *
@@ -35,24 +35,26 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 	 * @return void
 	 */
 	public function output() {
-
+		/** @var QM_Data_HTTP $data */
 		$data = $this->collector->get_data();
 
-		if ( ! empty( $data['http'] ) ) {
-			$statuses = array_keys( $data['types'] );
-			$components = wp_list_pluck( $data['component_times'], 'component' );
+		if ( ! empty( $data->http ) ) {
+			$statuses = array_keys( $data->types );
+			$components = array_column( $data->component_times, 'component' );
 
 			usort( $statuses, 'strcasecmp' );
-			usort( $components, 'strcasecmp' );
+			usort( $components, '\QM_Component::sort' );
 
 			$status_output = array();
+			$hosts = array_unique( array_column( $data->http, 'host' ) );
+			sort( $hosts );
 
-			foreach ( $statuses as $key => $status ) {
-				if ( -1 === $status ) {
-					$status_output[-1] = __( 'Error', 'query-monitor' );
-				} elseif ( -2 === $status ) {
+			foreach ( $statuses as $status ) {
+				if ( 'error' === $status ) {
+					$status_output['error'] = __( 'Error', 'query-monitor' );
+				} elseif ( 'non-blocking' === $status ) {
 					/* translators: A non-blocking HTTP API request */
-					$status_output[-2] = __( 'Non-blocking', 'query-monitor' );
+					$status_output['non-blocking'] = __( 'Non-blocking', 'query-monitor' );
 				} else {
 					$status_output[] = $status;
 				}
@@ -63,15 +65,20 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 			echo '<thead>';
 			echo '<tr>';
 			echo '<th scope="col">' . esc_html__( 'Method', 'query-monitor' ) . '</th>';
-			echo '<th scope="col">' . esc_html__( 'URL', 'query-monitor' ) . '</th>';
+			echo '<th scope="col" class="qm-filterable-column">';
+			echo $this->build_filter( 'host', $hosts, __( 'URL', 'query-monitor' ) ); // WPCS: XSS ok.
+			echo '</th>';
 			echo '<th scope="col" class="qm-filterable-column">';
 			echo $this->build_filter( 'type', $status_output, __( 'Status', 'query-monitor' ) ); // WPCS: XSS ok.
 			echo '</th>';
 			echo '<th scope="col">' . esc_html__( 'Caller', 'query-monitor' ) . '</th>';
 			echo '<th scope="col" class="qm-filterable-column">';
-			echo $this->build_filter( 'component', $components, __( 'Component', 'query-monitor' ) ); // WPCS: XSS ok.
+
+			$values = wp_list_pluck( $components, 'name' );
+
+			echo $this->build_filter( 'component', $values, __( 'Component', 'query-monitor' ) ); // WPCS: XSS ok.
 			echo '</th>';
-			echo '<th scope="col" class="qm-num">' . esc_html__( 'Size', 'query-monitor' ) . '</th>';
+			echo '<th scope="col" class="qm-num">' . esc_html__( 'Response Size', 'query-monitor' ) . '</th>';
 			echo '<th scope="col" class="qm-num">' . esc_html__( 'Timeout', 'query-monitor' ) . '</th>';
 			echo '<th scope="col" class="qm-num">' . esc_html__( 'Time', 'query-monitor' ) . '</th>';
 			echo '</tr>';
@@ -80,15 +87,32 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 			echo '<tbody>';
 			$i = 0;
 
-			foreach ( $data['http'] as $key => $row ) {
+			foreach ( $data->http as $row ) {
 				$ltime = $row['ltime'];
 				$i++;
 				$is_error = false;
 				$row_attr = array();
 				$css = '';
 
-				if ( is_wp_error( $row['response'] ) ) {
-					$response = $row['response']->get_error_message();
+				if ( $row['response'] instanceof WP_Error ) {
+					// These are both fallback errors that handle particularly broken scenarios.
+					switch ( $row['response']->get_error_code() ) {
+						case 'http_request_not_executed':
+							$response = sprintf(
+								/* translators: An HTTP API request was not executed. %s: Hook name */
+								__( 'Request not executed due to a filter on %s', 'query-monitor' ),
+								'pre_http_request'
+							);
+							break;
+						case 'http_request_timed_out':
+							/* translators: An HTTP API request timed out */
+							$response = __( 'Request timed out', 'query-monitor' );
+							break;
+						default:
+							$response = $row['response']->get_error_message();
+							break;
+					}
+
 					$is_error = true;
 				} elseif ( ! $row['args']['blocking'] ) {
 					/* translators: A non-blocking HTTP API request */
@@ -112,18 +136,16 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 				$url = self::format_url( $row['url'] );
 				$info = '';
 
-				$url = preg_replace( '|^http:|', '<span class="qm-warn">http</span>:', $url );
+				if ( ! $row['local'] ) {
+					$url = preg_replace( '|^http:|', '<span class="qm-warn">http</span>:', $url );
 
-				if ( 'https' === parse_url( $row['url'], PHP_URL_SCHEME ) ) {
-					if ( empty( $row['args']['sslverify'] ) && ! $row['local'] ) {
-						$info .= '<span class="qm-warn">' . QueryMonitor::init()->icon( 'warning' ) . esc_html( sprintf(
+					if ( 'https' === parse_url( $row['url'], PHP_URL_SCHEME ) && empty( $row['args']['sslverify'] ) ) {
+						$info .= '<span class="qm-warn">' . QueryMonitor::icon( 'warning' ) . esc_html( sprintf(
 							/* translators: An HTTP API request has disabled certificate verification. 1: Relevant argument name */
 							__( 'Certificate verification disabled (%s)', 'query-monitor' ),
 							'sslverify=false'
 						) ) . '</span><br>';
 						$url = preg_replace( '|^https:|', '<span class="qm-warn">https</span>:', $url );
-					} elseif ( ! $is_error && $row['args']['blocking'] ) {
-						$url = preg_replace( '|^https:|', '<span class="qm-true">https</span>:', $url );
 					}
 				}
 
@@ -138,7 +160,11 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 
 				$row_attr['data-qm-component'] = $component->name;
 				$row_attr['data-qm-type'] = $row['type'];
-				$row_attr['data-qm-time'] = $row['ltime'];
+				$row_attr['data-qm-host'] = $row['host'];
+
+				if ( ! $row['intercepted'] ) {
+					$row_attr['data-qm-time'] = $row['ltime'];
+				}
 
 				if ( 'core' !== $component->context ) {
 					$row_attr['data-qm-component'] .= ' non-core';
@@ -146,7 +172,7 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 
 				$attr = '';
 				foreach ( $row_attr as $a => $v ) {
-					$attr .= ' ' . $a . '="' . esc_attr( $v ) . '"';
+					$attr .= ' ' . $a . '="' . esc_attr( (string) $v ) . '"';
 				}
 
 				printf( // WPCS: XSS ok.
@@ -159,12 +185,24 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 					esc_html( $row['args']['method'] )
 				);
 
+				if ( $row['intercepted'] ) {
+					$url = sprintf(
+						'<span class="qm-warn">%1$s%2$s</span><br>',
+						QueryMonitor::icon( 'warning' ),
+						sprintf(
+							/* translators: %s: The name of a filter that short-circuited an HTTP API request */
+							esc_html__( 'This HTTP request was short-circuited by the %s filter and was not sent', 'query-monitor' ),
+							'<code>pre_http_request</code>'
+						)
+					) . $url;
+				}
+
 				if ( ! empty( $row['redirected_to'] ) ) {
 					$url .= sprintf(
 						'<br><span class="qm-warn">%1$s%2$s</span><br>%3$s',
-						QueryMonitor::init()->icon( 'warning' ),
+						QueryMonitor::icon( 'warning' ),
 						/* translators: An HTTP API request redirected to another URL */
-						__( 'Redirected to:', 'query-monitor' ),
+						esc_html__( 'This HTTP request was redirected to:', 'query-monitor' ),
 						self::format_url( $row['redirected_to'] )
 					);
 				}
@@ -175,70 +213,87 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 					$url
 				);
 
-				$show_toggle = ( ! empty( $row['transport'] ) && ! empty( $row['info'] ) );
+				// @TODO move all this logic to the collector.
+				$size = '';
+				$timeout = $row['args']['timeout'];
 
-				echo '<td class="qm-has-toggle qm-col-status">';
-				if ( $is_error ) {
-					// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
-					echo QueryMonitor::init()->icon( 'warning' );
-				}
-				echo esc_html( $response );
-
-				if ( $show_toggle ) {
-					echo self::build_toggler(); // WPCS: XSS ok;
-					echo '<ul class="qm-toggled">';
-				}
-
-				if ( ! empty( $row['transport'] ) ) {
-					$transport = sprintf(
-						/* translators: %s HTTP API transport name */
-						__( 'HTTP API Transport: %s', 'query-monitor' ),
-						$row['transport']
+				if ( $row['intercepted'] ) {
+					$ltime = 0;
+					$timeout = '';
+				} elseif ( isset( $row['info']['size_download'] ) ) {
+					$size = sprintf(
+						/* translators: %s: Memory used in kilobytes */
+						__( '%s kB', 'query-monitor' ),
+						number_format_i18n( $row['info']['size_download'] / 1024, 1 )
 					);
-					printf(
-						'<li><span class="qm-info qm-supplemental">%s</span></li>',
-						esc_html( $transport )
+				} elseif ( is_array( $row['response'] ) && isset( $row['response']['body'] ) ) {
+					$size = sprintf(
+						/* translators: %s: Memory used in kilobytes */
+						__( '%s kB', 'query-monitor' ),
+						number_format_i18n( strlen( $row['response']['body'] ) / 1024, 1 )
 					);
 				}
 
-				if ( ! empty( $row['info'] ) ) {
-					$time_fields = array(
-						'namelookup_time' => __( 'DNS Resolution Time', 'query-monitor' ),
-						'connect_time' => __( 'Connection Time', 'query-monitor' ),
-						'starttransfer_time' => __( 'Transfer Start Time (TTFB)', 'query-monitor' ),
-					);
-					foreach ( $time_fields as $key => $value ) {
-						if ( ! isset( $row['info'][ $key ] ) ) {
-							continue;
-						}
-						printf(
-							'<li><span class="qm-info qm-supplemental">%1$s: %2$s</span></li>',
-							esc_html( $value ),
-							esc_html( number_format_i18n( $row['info'][ $key ], 4 ) )
-						);
+				if ( ! $row['args']['blocking'] ) {
+					$size = '';
+				}
+
+				if ( $row['intercepted'] && ! $is_error ) {
+					echo '<td class="qm-col-status"></td>';
+				} else {
+					$show_toggle = ! empty( $row['info'] );
+
+					echo '<td class="qm-has-toggle qm-col-status">';
+					if ( $is_error ) {
+						// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+						echo QueryMonitor::icon( 'warning' );
+					}
+					echo esc_html( $response );
+
+					if ( $show_toggle ) {
+						echo self::build_toggler(); // WPCS: XSS ok;
+						echo '<ul class="qm-toggled">';
 					}
 
-					$other_fields = array(
-						'content_type' => __( 'Response Content Type', 'query-monitor' ),
-						'primary_ip' => __( 'IP Address', 'query-monitor' ),
-					);
-					foreach ( $other_fields as $key => $value ) {
-						if ( ! isset( $row['info'][ $key ] ) ) {
-							continue;
-						}
-						printf(
-							'<li><span class="qm-info qm-supplemental">%1$s: %2$s</span></li>',
-							esc_html( $value ),
-							esc_html( $row['info'][ $key ] )
+					if ( ! empty( $row['info'] ) ) {
+						$time_fields = array(
+							'namelookup_time' => __( 'DNS Resolution Time', 'query-monitor' ),
+							'connect_time' => __( 'Connection Time', 'query-monitor' ),
+							'starttransfer_time' => __( 'Transfer Start Time (TTFB)', 'query-monitor' ),
 						);
+						foreach ( $time_fields as $key => $value ) {
+							if ( ! isset( $row['info'][ $key ] ) ) {
+								continue;
+							}
+							printf(
+								'<li><span class="qm-info qm-supplemental">%1$s: %2$s</span></li>',
+								esc_html( $value ),
+								esc_html( number_format_i18n( $row['info'][ $key ], 4 ) )
+							);
+						}
+
+						$other_fields = array(
+							'content_type' => __( 'Response Content Type', 'query-monitor' ),
+							'primary_ip' => __( 'IP Address', 'query-monitor' ),
+						);
+						foreach ( $other_fields as $key => $value ) {
+							if ( ! isset( $row['info'][ $key ] ) ) {
+								continue;
+							}
+							printf(
+								'<li><span class="qm-info qm-supplemental">%1$s: %2$s</span></li>',
+								esc_html( $value ),
+								esc_html( $row['info'][ $key ] )
+							);
+						}
 					}
-				}
 
-				if ( $show_toggle ) {
-					echo '</ul>';
-				}
+					if ( $show_toggle ) {
+						echo '</ul>';
+					}
 
-				echo '</td>';
+					echo '</td>';
+				}
 
 				$caller = array_shift( $stack );
 
@@ -263,16 +318,6 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 					esc_html( $component->name )
 				);
 
-				$size = '';
-
-				if ( isset( $row['info']['size_download'] ) ) {
-					$size = sprintf(
-						/* translators: %s: Memory used in kilobytes */
-						__( '%s kB', 'query-monitor' ),
-						number_format_i18n( $row['info']['size_download'] / 1024, 1 )
-					);
-				}
-
 				printf(
 					'<td class="qm-nowrap qm-num">%s</td>',
 					esc_html( $size )
@@ -280,7 +325,7 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 
 				printf(
 					'<td class="qm-num">%s</td>',
-					esc_html( $row['args']['timeout'] )
+					esc_html( $timeout )
 				);
 
 				if ( empty( $ltime ) ) {
@@ -299,8 +344,8 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 			echo '</tbody>';
 			echo '<tfoot>';
 
-			$total_stime = number_format_i18n( $data['ltime'], 4 );
-			$count = count( $data['http'] );
+			$total_stime = number_format_i18n( $data->ltime, 4 );
+			$count = count( $data->http );
 
 			echo '<tr>';
 			printf(
@@ -331,13 +376,13 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 	 * @return array<int, string>
 	 */
 	public function admin_class( array $class ) {
-
+		/** @var QM_Data_HTTP $data */
 		$data = $this->collector->get_data();
 
-		if ( isset( $data['errors']['alert'] ) ) {
+		if ( isset( $data->errors['alert'] ) ) {
 			$class[] = 'qm-alert';
 		}
-		if ( isset( $data['errors']['warning'] ) ) {
+		if ( isset( $data->errors['warning'] ) ) {
 			$class[] = 'qm-warning';
 		}
 
@@ -350,10 +395,10 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 	 * @return array<string, mixed[]>
 	 */
 	public function admin_menu( array $menu ) {
-
+		/** @var QM_Data_HTTP $data */
 		$data = $this->collector->get_data();
 
-		$count = isset( $data['http'] ) ? count( $data['http'] ) : 0;
+		$count = ! empty( $data->http ) ? count( $data->http ) : 0;
 
 		$title = ( empty( $count ) )
 			? __( 'HTTP API Calls', 'query-monitor' )
@@ -367,10 +412,10 @@ class QM_Output_Html_HTTP extends QM_Output_Html {
 			) ),
 		);
 
-		if ( isset( $data['errors']['alert'] ) ) {
+		if ( isset( $data->errors['alert'] ) ) {
 			$args['meta']['classname'] = 'qm-alert';
 		}
-		if ( isset( $data['errors']['warning'] ) ) {
+		if ( isset( $data->errors['warning'] ) ) {
 			$args['meta']['classname'] = 'qm-warning';
 		}
 

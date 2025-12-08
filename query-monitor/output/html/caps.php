@@ -1,4 +1,4 @@
-<?php
+<?php declare(strict_types = 1);
 /**
  * User capability checks output for HTML pages.
  *
@@ -57,21 +57,21 @@ class QM_Output_Html_Caps extends QM_Output_Html {
 			return;
 		}
 
+		/** @var QM_Data_Caps */
 		$data = $this->collector->get_data();
 
-		if ( ! empty( $data['caps'] ) ) {
+		if ( ! empty( $data->caps ) ) {
 			$this->before_tabular_output();
 
 			$results = array(
 				'true',
 				'false',
 			);
-			$show_user = ( count( $data['users'] ) > 1 );
-			$parts = $data['parts'];
-			$components = $data['components'];
+			$parts = $data->parts;
+			$components = $data->components;
 
 			usort( $parts, 'strcasecmp' );
-			usort( $components, 'strcasecmp' );
+			usort( $components, '\QM_Component::sort' );
 
 			echo '<thead>';
 			echo '<tr>';
@@ -79,9 +79,9 @@ class QM_Output_Html_Caps extends QM_Output_Html {
 			echo $this->build_filter( 'name', $parts, __( 'Capability Check', 'query-monitor' ) ); // WPCS: XSS ok;
 			echo '</th>';
 
-			$users = $data['users'];
+			$users = $data->users;
 
-			usort( $users, 'strcasecmp' );
+			sort( $users );
 
 			echo '<th scope="col" class="qm-filterable-column qm-num">';
 			echo $this->build_filter( 'user', $users, __( 'User', 'query-monitor' ) ); // WPCS: XSS ok;
@@ -92,14 +92,15 @@ class QM_Output_Html_Caps extends QM_Output_Html {
 			echo '</th>';
 			echo '<th scope="col">' . esc_html__( 'Caller', 'query-monitor' ) . '</th>';
 			echo '<th scope="col" class="qm-filterable-column">';
-			echo $this->build_filter( 'component', $components, __( 'Component', 'query-monitor' ) ); // WPCS: XSS ok.
+			$values = wp_list_pluck( $components, 'name' );
+			echo $this->build_filter( 'component', $values, __( 'Component', 'query-monitor' ) ); // WPCS: XSS ok.
 			echo '</th>';
 			echo '</tr>';
 			echo '</thead>';
 
 			echo '<tbody>';
 
-			foreach ( $data['caps'] as $row ) {
+			foreach ( $data->caps as $row ) {
 				$component = $row['component'];
 
 				$row_attr = array();
@@ -108,7 +109,7 @@ class QM_Output_Html_Caps extends QM_Output_Html {
 				$row_attr['data-qm-component'] = $component->name;
 				$row_attr['data-qm-result'] = ( $row['result'] ) ? 'true' : 'false';
 
-				if ( 'core' !== $component->context ) {
+				if ( ! $component->is_core() ) {
 					$row_attr['data-qm-component'] .= ' non-core';
 				}
 
@@ -188,7 +189,7 @@ class QM_Output_Html_Caps extends QM_Output_Html {
 
 			echo '<tfoot>';
 
-			$count = count( $data['caps'] );
+			$count = count( $data->caps );
 
 			echo '<tr>';
 			echo '<td colspan="5">';

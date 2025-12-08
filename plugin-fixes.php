@@ -19,6 +19,47 @@ if ( ! defined( 'WPCF7_UPLOADS_TMP_DIR' ) ) {
 }
 
 /**
+ * Contact Form 7 (https://wordpress.org/plugins/contact-form-7/)
+ *
+ * The plugin ignores the value of `WPCF7_UPLOADS_TMP_DIR` if it is not
+ * within a set of paths allowed by the plugin. The plugin allows the path
+ * defined in `WP_TEMP_DIR`, so this fix uses the plugin's `wpcf7_init`
+ * filter to set `WP_TEMP_DIR` to `/tmp/` so that the plugin will allow the
+ * path that we defined earlier in `WPCF7_UPLOADS_TMP_DIR`.
+ */
+function vip_wpcf7_upload_dir() {
+	if ( ! defined( 'WP_TEMP_DIR' ) ) {
+		define( 'WP_TEMP_DIR', get_temp_dir() );
+	}
+}
+add_action( 'wpcf7_init', 'vip_wpcf7_upload_dir', 10, 0 ); 
+
+/**
+ * Versions of CF7 prior to v5.8.1 attempt to clean-up uploaded attachments
+ * somewhere within `wp-content`, ignoring the value of WPCF7_UPLOADS_TMP_DIR if
+ * it is not within `wp-content`. This does not work because we disable `open_dir()`,
+ * flooding the PHP logs with `opendir() Failed to open directory` warnings.
+ *
+ * @return void
+ */
+function vip_disable_wpcf7_cleanup_upload_files() {
+	if ( ! defined( 'WPCF7_VERSION' ) || ! version_compare( WPCF7_VERSION, '5.8.1', '>=' ) ) {
+		// Return early if the relevant functions do not exist
+		if ( ! defined( 'WPCF7_UPLOADS_TMP_DIR' ) || ! function_exists( 'wpcf7_cleanup_upload_files' ) || ! function_exists( 'wpcf7_upload_tmp_dir' ) ) {
+			return;
+		}
+
+		// Check if the action is queued and if the tmp directories match
+		// (they might match if the plugin is an old version, or has been patched)
+		$priority = has_action( 'shutdown', 'wpcf7_cleanup_upload_files' );
+		if ( false !== $priority && WPCF7_UPLOADS_TMP_DIR !== wpcf7_upload_tmp_dir() ) {
+			remove_action( 'shutdown', 'wpcf7_cleanup_upload_files', $priority );
+		}
+	}
+}
+add_action( 'plugins_loaded', 'vip_disable_wpcf7_cleanup_upload_files' );
+
+/**
  * AMP for WordPress (https://github.com/ampproject/amp-wp)
  * Make sure the `amp` query var has an explicit value.
  * Avoids issues when filtering the deprecated `query_string` hook.
@@ -71,3 +112,92 @@ function vip_disable_gform_cleanup_target_dir() {
 	}
 }
 add_action( 'plugins_loaded', 'vip_disable_gform_cleanup_target_dir' );
+
+
+/**
+ * Disable Divi caching since VIP already supports page and object caching.
+ * 
+ * Divi caching can cause bloated media directory, let's just turn it off.
+ * 
+ * @see https://docs.wpvip.com/plugins/incompatibilities/#divi
+ */
+function vip_divi_setup() {
+	if ( ! defined( 'ET_CORE_VERSION' ) ) {
+			return; // Divi is not active
+	}
+
+	// Disable Divi's custom file cache layer and its asset and module caching features
+	if ( ! defined( 'ET_DISABLE_FILE_BASED_CACHE' ) ) {
+			define( 'ET_DISABLE_FILE_BASED_CACHE', true );
+	}
+	if ( ! defined( 'ET_BUILDER_CACHE_ASSETS' ) ) {
+			define( 'ET_BUILDER_CACHE_ASSETS', false );
+	}
+	if ( ! defined( 'ET_BUILDER_CACHE_MODULES' ) ) {
+			define( 'ET_BUILDER_CACHE_MODULES', false );
+	}
+
+	// Define the custom CACHE DIR for Divi theme on VIP
+	$get_wp_vip_upload_dir = wp_get_upload_dir();
+	if ( ! defined( 'ET_CORE_CACHE_DIR' ) ) {
+			define( 'ET_CORE_CACHE_DIR', $get_wp_vip_upload_dir['basedir'] . '/et-cache' );
+	}
+	if ( ! defined( 'ET_CORE_CACHE_DIR_URL' ) ) {
+			define( 'ET_CORE_CACHE_DIR_URL', $get_wp_vip_upload_dir['baseurl'] . '/et-cache' );
+	}
+
+	// Add filter to apply WP_Filesystem credentials
+	add_filter( 'et_cache_wpfs_credentials', function () {
+			return request_filesystem_credentials( site_url() );
+	});
+}
+add_action( 'after_setup_theme', 'vip_divi_setup' );
+
+// Disable WooCommerce background image regeneration - this is redundant
+add_filter( 'woocommerce_background_image_regeneration', '__return_false' );
+
+/**
+ * Proxy Twitter embeds to the x-oembed-proxy.wpvip.com endpoint.
+ *
+ * @param string $provider The provider URL.
+ * @return string The proxied provider URL.
+ */
+function vip_proxy_twitter_embed( $provider ) {
+	if ( ! str_starts_with( $provider, 'https://publish.twitter.com/oembed' ) ) {
+		return $provider;
+	}
+
+	return str_replace( 'https://publish.twitter.com/oembed', 'https://x-oembed-proxy.wpvip.com/oembed', $provider );
+}
+add_filter( 'oembed_fetch_url', 'vip_proxy_twitter_embed', 10 );
+
+/**
+* Ninja Forms (https://wordpress.org/plugins/ninja-forms/)
+*
+* Workaround for a type juggling issue in the Ninja Forms plugin update logic. Valid as of Ninja Forms v3.4.34.2.
+*
+* The plugin uses a loose type comparison when checking option values during updates.
+* Specifically, `update_option()` performs a strict `!==` check, and due to Ninja Forms
+* setting an integer instead of a string (or vice versa), it causes unnecessary DB writes
+* on every wp-admin request.
+*
+* This can lead to excessive `options` table churn and potential `alloptions` bloat,
+* especially on high-traffic editorial sites, triggering performance issues related to roles and rewrites.
+*
+* @see: https://plugins.trac.wordpress.org/browser/ninja-forms/trunk/ninja-forms.php#L541
+* @param mixed $value The new value to be saved.
+* @param string $old_value The old value to be replaced.
+* @return mixed The value to be saved.
+*/
+function vip_ninja_forms_update_option( $value, $old_value ) {
+	if (
+		class_exists( 'Ninja_Forms' ) &&
+		defined( 'Ninja_Forms::VERSION' ) &&
+		version_compare( Ninja_Forms::VERSION, '3.4.34.2', '>=' )
+	) {
+		return ( 0 === $value && '0' === $old_value ) ? '0' : $value;
+	}
+	return $value;
+}
+
+add_filter( 'pre_update_option_ninja_forms_needs_updates', 'vip_ninja_forms_update_option', 10, 2 );

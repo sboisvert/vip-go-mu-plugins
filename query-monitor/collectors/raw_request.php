@@ -1,12 +1,19 @@
-<?php
+<?php declare(strict_types = 1);
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-class QM_Collector_Raw_Request extends QM_Collector {
+/**
+ * @extends QM_DataCollector<QM_Data_Raw_Request>
+ */
+class QM_Collector_Raw_Request extends QM_DataCollector {
 
 	public $id = 'raw_request';
+
+	public function get_storage(): QM_Data {
+		return new QM_Data_Raw_Request();
+	}
 
 	/**
 	 * Extracts headers from a PHP-style $_SERVER array.
@@ -44,12 +51,12 @@ class QM_Collector_Raw_Request extends QM_Collector {
 	 */
 	public function process() {
 		$request = array(
-			'ip' => $_SERVER['REMOTE_ADDR'],
+			'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
 			'method' => strtoupper( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ),
 			'scheme' => is_ssl() ? 'https' : 'http',
-			'host' => wp_unslash( $_SERVER['HTTP_HOST'] ),
-			'path' => isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '/',
-			'query' => isset( $_SERVER['QUERY_STRING'] ) ? wp_unslash( $_SERVER['QUERY_STRING'] ) : '',
+			'host' => self::get_host(),
+			'path' => wp_unslash( $_SERVER['REQUEST_URI'] ?? '/' ),
+			'query' => wp_unslash( $_SERVER['QUERY_STRING'] ?? '' ),
 			'headers' => $this->get_headers( wp_unslash( $_SERVER ) ),
 		);
 
@@ -57,13 +64,16 @@ class QM_Collector_Raw_Request extends QM_Collector {
 
 		$request['url'] = sprintf( '%s://%s%s', $request['scheme'], $request['host'], $request['path'] );
 
-		$this->data['request'] = $request;
+		$this->data->request = $request;
 
 		$headers = array();
 		$raw_headers = headers_list();
 		foreach ( $raw_headers as $row ) {
-			list( $key, $value ) = explode( ':', $row, 2 );
-			$headers[ trim( $key ) ] = trim( $value );
+			$parts = explode( ':', $row, 2 );
+			$key = trim( $parts[0] );
+			// This is needed when a header is sent without a value, for example: header('X-Hello');
+			$value = isset( $parts[1] ) ? trim( $parts[1] ) : '';
+			$headers[ $key ] = $value;
 		}
 
 		ksort( $headers );
@@ -73,7 +83,7 @@ class QM_Collector_Raw_Request extends QM_Collector {
 			'headers' => $headers,
 		);
 
-		$this->data['response'] = $response;
+		$this->data->response = $response;
 	}
 }
 

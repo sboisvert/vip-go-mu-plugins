@@ -8,14 +8,15 @@ Author URI: http://automattic.com/
 */
 
 // phpcs:disable Generic.Files.OneObjectStructurePerFile.MultipleFound -- needs refactoring
+// phpcs:disable Universal.Files.SeparateFunctionsFromOO.Mixed
 
 /* Requires at least: 3.9.0
  * due to the dependancy on the filter 'wp_insert_attachment_data'
  * used to catch imports and push the files to the VIP MogileFS service
  */
 
-if ( ! defined( 'FILE_SERVICE_ENDPOINT' ) ) {
-	define( 'FILE_SERVICE_ENDPOINT', 'files.vipv2.net' );
+if ( ! defined( 'FILE_SERVICE_URI' ) ) {
+	define( 'FILE_SERVICE_URI', 'https://files.vipv2.net' );
 }
 
 define( 'LOCAL_UPLOADS', '/tmp/uploads' );
@@ -40,6 +41,7 @@ require_once __DIR__ . '/files/acl/acl.php';
  */
 require_once __DIR__ . '/files/class-meta-updater.php';
 
+use Automattic\Jetpack\Image_CDN\Image_CDN;
 use Automattic\VIP\Files\VIP_Filesystem;
 use Automattic\VIP\Files\Meta_Updater;
 use Automattic\VIP\Utils\Alerts;
@@ -71,12 +73,12 @@ class A8C_Files {
 
 	public function __construct() {
 
-		// Upload size limit is 1GB
-		add_filter( 'upload_size_limit', function() {
-			return 1073741824; // 2^30
-		});
+		// Upload size limit is 4GB
+		add_filter( 'upload_size_limit', function () {
+			return GB_IN_BYTES * 4;
+		} );
 
-		if ( defined( 'VIP_FILESYSTEM_USE_STREAM_WRAPPER' ) && true === VIP_FILESYSTEM_USE_STREAM_WRAPPER ) {
+		if ( defined( 'VIP_FILESYSTEM_USE_STREAM_WRAPPER' ) && true === constant( 'VIP_FILESYSTEM_USE_STREAM_WRAPPER' ) ) {
 			$this->init_vip_filesystem();
 		}
 
@@ -85,7 +87,7 @@ class A8C_Files {
 		add_action( 'init', array( $this, 'init_photon' ) );
 
 		// ensure we always upload with year month folder layouts
-		add_filter( 'pre_option_uploads_use_yearmonth_folders', function() {
+		add_filter( 'pre_option_uploads_use_yearmonth_folders', function () {
 			return '1';
 		} );
 
@@ -93,7 +95,7 @@ class A8C_Files {
 		add_filter( 'option_upload_url_path', array( $this, 'upload_url_path' ) );
 
 		// Conditionally schedule the attachment filesize metadata update job
-		if ( defined( 'VIP_FILESYSTEM_SCHEDULE_FILESIZE_UPDATE' ) && true === VIP_FILESYSTEM_SCHEDULE_FILESIZE_UPDATE ) {
+		if ( defined( 'VIP_GO_ENV' ) && 'production' === constant( 'VIP_GO_ENV' ) ) {
 			// add new cron schedule for filesize update
 			add_filter( 'cron_schedules', array( $this, 'filter_cron_schedules' ), 10, 1 ); // phpcs:ignore WordPress.WP.CronInterval.CronSchedulesInterval
 
@@ -101,6 +103,11 @@ class A8C_Files {
 				// Schedule meta update job
 				$this->schedule_update_job();
 			}
+		}
+
+		if ( ! is_admin() && class_exists( WP_HTML_Tag_Processor::class ) ) {
+			// Add filter to fix image block sizes
+			add_filter( 'render_block_core/image', array( $this, 'fix_img_block_sizes' ) );
 		}
 	}
 
@@ -124,9 +131,10 @@ class A8C_Files {
 	}
 
 	private function init_jetpack_photon_filters() {
-		if ( ! class_exists( 'Jetpack_Photon' ) ) {
+		// Jetpack_Photon is deprecated in favor of Automattic\Jetpack\Image_CDN\Image_CDN in 12.2
+		if ( ! class_exists( 'Jetpack_Photon' ) && ! class_exists( Image_CDN::class ) ) {
 			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
-			trigger_error( 'Cannot initialize Photon filters as the Jetpack_Photon class is not loaded. Please verify that Jetpack is loaded and active to restore this functionality.', E_USER_WARNING );
+			trigger_error( 'Cannot initialize Photon filters as neither Jetpack_Photon nor Automattic\\Jetpack\\Image_CDN\\Image_CDN class is not loaded. Please verify that Jetpack is loaded and active to restore this functionality.', E_USER_WARNING );
 			return;
 		}
 
@@ -151,19 +159,23 @@ class A8C_Files {
 
 		// This is our catch-all to strip dimensions from intermediate images in content.
 		// Since this primarily only impacts post_content we do a little dance to add the filter early to `the_content` and then remove it later on in the same hook.
-		add_filter( 'the_content', function( $content ) {
+		add_filter( 'the_content', function ( $content ) {
 			add_filter( 'jetpack_photon_pre_image_url', [ 'A8C_Files_Utils', 'strip_dimensions_from_url_path' ] );
 			return $content;
 		}, 0 );
 
-		add_filter( 'the_content', function( $content ) {
+		add_filter( 'the_content', function ( $content ) {
 			remove_filter( 'jetpack_photon_pre_image_url', [ 'A8C_Files_Utils', 'strip_dimensions_from_url_path' ] );
 			return $content;
 		}, 9999999 ); // Jetpack hooks in at 6 9s (999999) so we do 7
 
 		// If Photon isn't active, we need to init the necessary filters.
 		// This takes care of rewriting intermediate images for us.
-		Jetpack_Photon::instance();
+		if ( class_exists( Image_CDN::class ) ) {
+			Image_CDN::instance();
+		} else {
+			Jetpack_Photon::instance();
+		}
 
 		// Jetpack_Photon's downsize filter doesn't run when is_admin(), so we need to fallback to the Go filters.
 		// This is temporary until Jetpack allows more easily running these filters for is_admin().
@@ -256,6 +268,9 @@ class A8C_Files {
 				$_max_w = 300;
 				$_max_h = 300;
 			}
+		} elseif ( 'medium_large' == $size ) {
+			$_max_w = get_option( 'medium_large_size_w' );
+			$_max_h = get_option( 'medium_large_size_h' );
 		} elseif ( 'large' == $size ) {
 			$_max_w = get_option( 'large_size_w' );
 			$_max_h = get_option( 'large_size_h' );
@@ -481,7 +496,7 @@ class A8C_Files {
 			$end_index   = $start_index + $batch_size;
 
 			// Avoid infinite loops
-			$num_lookups++;
+			++$num_lookups;
 			if ( $num_lookups >= $max_lookups ) {
 				break;
 			}
@@ -502,6 +517,67 @@ class A8C_Files {
 		update_option( self::OPT_NEXT_FILESIZE_INDEX, $start_index, false );
 	}
 
+	/**
+	 * Adds 'correct' w & h values to img tags in core/image blocks
+	 *
+	 * @param string $block_content The block content.
+	 * @return string Modified block content.
+	 */
+	public function fix_img_block_sizes( $block_content ) {
+		// Check img tag
+		$img_tag_processor = new WP_HTML_Tag_Processor( $block_content );
+		if ( ! $img_tag_processor->next_tag( 'img' ) ) {
+			// No img found, bail
+			return $block_content;
+		}
+
+		// Get the image ID class from the img tag
+		$img_class = $img_tag_processor->get_attribute( 'class' );
+		if ( ! $img_class || ! preg_match( '/wp-image-(\d+)/', $img_class, $image_matches ) ) {
+			// If we can't find wp-image-XXX, bail
+			return $block_content;
+		}
+		$image_id = $image_matches[1];
+
+		// Check figure tag
+		$figure_tag_processor = new WP_HTML_Tag_Processor( $block_content );
+		if ( ! $figure_tag_processor->next_tag( 'figure' ) ) {
+			// No figure found, bail
+			return $block_content;
+		}
+
+		// Get the size name class from the figure tag
+		$figure_class = $figure_tag_processor->get_attribute( 'class' );
+		if ( ! $figure_class || ! preg_match( '/size-([^\s"]+)/', $figure_class, $size_matches ) ) {
+			// If we can't find size-xxx, bail
+			return $block_content;
+		}
+		$size_name = $size_matches[1];
+
+		// If the size is full, bail
+		if ( 'full' === $size_name ) {
+			return $block_content;
+		}
+
+		// Get meta for the attachment sizes
+		$metadata = wp_get_attachment_metadata( (int) $image_id );
+
+		if ( ! $metadata || empty( $metadata['sizes'][ $size_name ] ) ) {
+			// If no size meta is available for this size, bail
+			return $block_content;
+		}
+
+		// Get values ready
+		$width  = $metadata['sizes'][ $size_name ]['width'];
+		$height = $metadata['sizes'][ $size_name ]['height'];
+
+		// Set width/height for img
+		$img_tag_processor->set_attribute( 'width', $width );
+		$img_tag_processor->set_attribute( 'height', $height );
+
+		// Get the result ready
+		return $img_tag_processor->get_updated_html();
+	}
 }
 
 class A8C_Files_Utils {
@@ -521,7 +597,7 @@ class A8C_Files_Utils {
 			return $site_url;
 		}
 
-		if ( wp_endswith( $image_url_parsed['host'], '.go-vip.co' ) || wp_endswith( $image_url_parsed['host'], '.go-vip.net' ) ) {
+		if ( is_vip_convenience_domain( $image_url_parsed['host'] ?? '' ) ) {
 			return $image_url_parsed['scheme'] . '://' . $image_url_parsed['host'];
 		}
 
@@ -693,3 +769,79 @@ if ( defined( 'FILES_CLIENT_SITE_ID' ) && defined( 'FILES_ACCESS_TOKEN' ) ) {
  * This is not needed on VIP Go since we use Photon for dynamic image work.
  */
 add_filter( 'big_image_size_threshold', '__return_false' );
+
+/**
+ * Add a file or pattern to be handled locally by the VIP Filesystem Stream Wrapper
+ *
+ * Files added to this list will be stored in the local temporary directory instead of
+ * being uploaded to the VIP Files Service. This is useful for files that need to be
+ * processed locally or should not be persisted remotely.
+ *
+ * Supports exact file paths and wildcard patterns using fnmatch syntax:
+ * - Use `*` to match any number of characters except directory separators
+ * - Use `?` to match a single character
+ * - Use `[abc]` to match any character in the set
+ *
+ * Examples:
+ * - `vip://wp-content/uploads/temp-file.txt` - Exact file path
+ * - `vip://wp-content/uploads/cache/*.json` - All JSON files in cache directory
+ * - `vip://wp-content/uploads/tmp/*` - All files in tmp directory
+ *
+ * @param string $file_path Path to the file or a wildcard pattern
+ * @return bool True if the file was added successfully, false otherwise
+ */
+function wpvip_fs_local_file_add( $file_path ) {
+	if ( ! method_exists( 'Automattic\VIP\Files\VIP_Filesystem_Local_Stream_Wrapper', 'add_local_file' ) ) {
+		_doing_it_wrong(
+			__FUNCTION__,
+			'VIP Filesystem Stream Wrapper is not loaded. Please ensure VIP_FILESYSTEM_USE_STREAM_WRAPPER is defined and set to true.',
+			'1.0.0'
+		);
+		return false;
+	}
+
+	return \Automattic\VIP\Files\VIP_Filesystem_Local_Stream_Wrapper::add_local_file( $file_path );
+}
+
+/**
+ * Remove a file or pattern from local handling by the VIP Filesystem Stream Wrapper
+ *
+ * Files removed from the local list will be handled by the VIP Files Service instead
+ * of being stored locally.
+ *
+ * @param string $file_path Path to the file or pattern to remove
+ * @return bool True if the file was removed successfully, false otherwise
+ */
+function wpvip_fs_local_file_remove( $file_path ) {
+	if ( ! method_exists( 'Automattic\VIP\Files\VIP_Filesystem_Local_Stream_Wrapper', 'remove_local_file' ) ) {
+		_doing_it_wrong(
+			__FUNCTION__,
+			'VIP Filesystem Stream Wrapper is not loaded. Please ensure VIP_FILESYSTEM_USE_STREAM_WRAPPER is defined and set to true.',
+			'1.0.0'
+		);
+		return false;
+	}
+
+	return \Automattic\VIP\Files\VIP_Filesystem_Local_Stream_Wrapper::remove_local_file( $file_path );
+}
+
+/**
+ * Get the list of files and patterns being handled locally by the VIP Filesystem Stream Wrapper
+ *
+ * Returns an array of file paths and wildcard patterns that are configured to be
+ * handled locally instead of being uploaded to the VIP Files Service.
+ *
+ * @return array List of file paths and patterns configured for local handling
+ */
+function wpvip_fs_local_file_list() {
+	if ( ! method_exists( 'Automattic\VIP\Files\VIP_Filesystem_Local_Stream_Wrapper', 'get_local_files' ) ) {
+		_doing_it_wrong(
+			__FUNCTION__,
+			'VIP Filesystem Stream Wrapper is not loaded. Please ensure VIP_FILESYSTEM_USE_STREAM_WRAPPER is defined and set to true.',
+			'1.0.0'
+		);
+		return array();
+	}
+
+	return \Automattic\VIP\Files\VIP_Filesystem_Local_Stream_Wrapper::get_local_files();
+}

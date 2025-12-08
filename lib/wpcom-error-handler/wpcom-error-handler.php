@@ -104,31 +104,6 @@ function wpcom_custom_error_handler( $whether_i_may_die, $type, $message, $file,
 		return true;
 	}
 
-	// Capture MemcachePool errors, throw a warning, and provide more debugging data.
-	if (
-		E_NOTICE === $type && defined( 'WP_CONTENT_DIR' ) &&
-		( WP_CONTENT_DIR . '/object-cache-stable.php' === $file || WP_CONTENT_DIR . '/object-cache-next.php' === $file )
-	) {
-		$type = E_WARNING;
-		// phpcs:ignore PHPCompatibility.FunctionUse.ArgumentFunctionsReportCurrentValue, WordPress.PHP.DevelopmentFunctions.error_log_debug_backtrace
-		foreach ( debug_backtrace() as $value ) {
-			$args = $value['args'] ?? [];
-			if ( 'wpcom_error_handler' === $value['function'] 
-				&& ! empty( $args[1] )
-				&& isset( $args[4]['id'] )
-				&& isset( $args[4]['data'] )
-				&& substr( $args[1], 0, strlen( 'MemcachePool::' ) ) === 'MemcachePool::'
-			) {
-				$message .= sprintf(
-					' (Key: %s, Group: %s, Data Size: %s)',
-					$args[4]['id'],
-					empty( $args[4]['group'] ) ? 'default' : $args[4]['group'],
-					strlen( $args[4]['data'] )
-				);
-			}
-		}
-	}
-
 	$die = false;
 	switch ( $type ) {
 		case E_CORE_ERROR: // we may not be able to capture this one
@@ -156,9 +131,6 @@ function wpcom_custom_error_handler( $whether_i_may_die, $type, $message, $file,
 		case E_USER_NOTICE:
 			$string = 'Notice';
 			break;
-		case E_STRICT:
-			$string = 'Strict Standards';
-			break;
 		case E_RECOVERABLE_ERROR:
 			$string = 'Catchable fatal error';
 			$die    = true;
@@ -169,6 +141,11 @@ function wpcom_custom_error_handler( $whether_i_may_die, $type, $message, $file,
 			break;
 		case 0:
 			return true;
+	}
+
+	// E_STRICT is deprecated in PHP 8.4 so it needs to be behind a version check.
+	if ( version_compare( PHP_VERSION, '8.4', '<' ) && E_STRICT === $type ) {
+		$string = 'Strict Standards';
 	}
 
 	// @ error suppression
@@ -195,7 +172,7 @@ function wpcom_custom_error_handler( $whether_i_may_die, $type, $message, $file,
 			$display_errors_format = "\n%s: %s in %s on line %d [%s] [%s]\n";
 		}
 
-		if ( 'stderr' === $display_errors && defined( 'STDERR' ) && is_resource( STDERR ) ) {
+		if ( 'stderr' === strtolower( $display_errors ) && defined( 'STDERR' ) && is_resource( STDERR ) ) {
 			fprintf( STDERR, $display_errors_format, $string, $message, $file, $line, htmlspecialchars( $source ), htmlspecialchars( $backtrace ) );
 		} else {
 			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
@@ -206,6 +183,18 @@ function wpcom_custom_error_handler( $whether_i_may_die, $type, $message, $file,
 	if ( ini_get( 'log_errors' ) ) {
 		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		error_log( sprintf( '%s: %s in %s on line %d [%s] [%s]', $string, $message, $file, $line, $source, $backtrace ) );
+	}
+
+	if ( function_exists( 'do_action' ) ) {
+		/**
+		 * Fires when a PHP error occurs.
+		 *
+		 * @param string $string  Error type.
+		 * @param string $message Error message.
+		 * @param string $file    Error file.
+		 * @param int    $line    Error line.
+		 */
+		do_action( 'php_error_handler', $string, $message, $file, $line );
 	}
 
 	// When we run at shutdown we must not die as then the pretty printing of the Error doesn't happen which is lame sauce.

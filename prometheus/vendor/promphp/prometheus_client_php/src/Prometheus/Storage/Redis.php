@@ -6,6 +6,7 @@ namespace Prometheus\Storage;
 
 use InvalidArgumentException;
 use Prometheus\Counter;
+use Prometheus\Exception\MetricJsonException;
 use Prometheus\Exception\StorageException;
 use Prometheus\Gauge;
 use Prometheus\Histogram;
@@ -28,6 +29,7 @@ class Redis implements Adapter
         'read_timeout' => '10',
         'persistent_connections' => false,
         'password' => null,
+        'user' => null,
     ];
 
     /**
@@ -95,8 +97,8 @@ class Redis implements Adapter
     }
 
     /**
-     * @deprecated use replacement method wipeStorage from Adapter interface
      * @throws StorageException
+     * @deprecated use replacement method wipeStorage from Adapter interface
      */
     public function flushRedis(): void
     {
@@ -123,6 +125,7 @@ class Redis implements Adapter
 
         $this->redis->eval(
             <<<LUA
+redis.replicate_commands()
 local cursor = "0"
 repeat 
     local results = redis.call('SCAN', cursor, 'MATCH', ARGV[1])
@@ -169,12 +172,12 @@ LUA
      * @return MetricFamilySamples[]
      * @throws StorageException
      */
-    public function collect(): array
+    public function collect(bool $sortMetrics = true): array
     {
         $this->ensureOpenConnection();
         $metrics = $this->collectHistograms();
-        $metrics = array_merge($metrics, $this->collectGauges());
-        $metrics = array_merge($metrics, $this->collectCounters());
+        $metrics = array_merge($metrics, $this->collectGauges($sortMetrics));
+        $metrics = array_merge($metrics, $this->collectCounters($sortMetrics));
         $metrics = array_merge($metrics, $this->collectSummaries());
         return array_map(
             function (array $metric): MetricFamilySamples {
@@ -194,9 +197,18 @@ LUA
         }
 
         $this->connectToServer();
+        $authParams = [];
 
-        if ($this->options['password'] !== null) {
-            $this->redis->auth($this->options['password']);
+        if (isset($this->options['user']) && $this->options['user'] !== '') {
+            $authParams[] = $this->options['user'];
+        }
+
+        if (isset($this->options['password'])) {
+            $authParams[] = $this->options['password'];
+        }
+
+        if ($authParams !== []) {
+            $this->redis->auth($authParams);
         }
 
         if (isset($this->options['database'])) {
@@ -218,17 +230,24 @@ LUA
             if ($this->options['persistent_connections'] !== false) {
                 $connection_successful = $this->redis->pconnect(
                     $this->options['host'],
-                    (int) $this->options['port'],
-                    (float) $this->options['timeout']
+                    (int)$this->options['port'],
+                    (float)$this->options['timeout']
                 );
             } else {
-                $connection_successful = $this->redis->connect($this->options['host'], (int) $this->options['port'], (float) $this->options['timeout']);
+                $connection_successful = $this->redis->connect($this->options['host'], (int)$this->options['port'], (float)$this->options['timeout']);
             }
             if (!$connection_successful) {
-                throw new StorageException("Can't connect to Redis server", 0);
+                throw new StorageException(
+                    sprintf("Can't connect to Redis server. %s", $this->redis->getLastError()),
+                    0
+                );
             }
         } catch (\RedisException $e) {
-            throw new StorageException("Can't connect to Redis server", 0, $e);
+            throw new StorageException(
+                sprintf("Can't connect to Redis server. %s", $e->getMessage()),
+                $e->getCode(),
+                $e
+            );
         }
     }
 
@@ -287,7 +306,8 @@ LUA
         if (false === $json) {
             throw new RuntimeException(json_last_error_msg());
         }
-        $this->redis->setNx($metaKey, $json);  /** @phpstan-ignore-line */
+        $this->redis->setNx($metaKey, $json);/** @phpstan-ignore-line */
+
 
         // store value key
         $valueKey = $summaryKey . ':' . $this->valueKey($data);
@@ -295,7 +315,7 @@ LUA
         if (false === $json) {
             throw new RuntimeException(json_last_error_msg());
         }
-        $this->redis->setNx($valueKey, $json); /** @phpstan-ignore-line */
+        $this->redis->setNx($valueKey, $json);/** @phpstan-ignore-line */
 
         // trick to handle uniqid collision
         $done = false;
@@ -395,7 +415,10 @@ LUA
         sort($keys);
         $histograms = [];
         foreach ($keys as $key) {
-            $raw = $this->redis->hGetAll(str_replace($this->redis->_prefix(''), '', $key));
+            $raw = $this->redis->hGetAll(ltrim($key, $this->redis->_prefix('')));
+            if (!isset($raw['__meta'])) {
+                continue;
+            }
             $histogram = json_decode($raw['__meta'], true);
             unset($raw['__meta']);
             $histogram['samples'] = [];
@@ -410,6 +433,9 @@ LUA
                     continue;
                 }
                 $allLabelValues[] = $d['labelValues'];
+            }
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $this->throwMetricJsonException($key);
             }
 
             // We need set semantics.
@@ -521,11 +547,15 @@ LUA
                 $sampleValues = $this->redis->keys($summaryKey . ':' . $metaData['name'] . ':' . $encodedLabelValues . ':value:*');
                 foreach ($sampleValues as $sampleValueWithPrefix) {
                     $sampleValue = $this->removePrefixFromKey($sampleValueWithPrefix);
-                    $samples[] = (float) $this->redis->get($sampleValue);
+                    $samples[] = (float)$this->redis->get($sampleValue);
                 }
 
                 if (count($samples) === 0) {
-                    $this->redis->del($valueKey);
+                    try {
+                        $this->redis->del($valueKey);
+                    } catch (\RedisException $e) {
+                        // ignore if we can't delete the key
+                    }
                     continue;
                 }
 
@@ -560,7 +590,11 @@ LUA
             if (count($data['samples']) > 0) {
                 $summaries[] = $data;
             } else {
-                $this->redis->del($metaKey);
+                try {
+                    $this->redis->del($metaKey);
+                } catch (\RedisException $e) {
+                    // ignore if we can't delete the key
+                }
             }
         }
         return $summaries;
@@ -569,13 +603,16 @@ LUA
     /**
      * @return mixed[]
      */
-    private function collectGauges(): array
+    private function collectGauges(bool $sortMetrics = true): array
     {
         $keys = $this->redis->sMembers(self::$prefix . Gauge::TYPE . self::PROMETHEUS_METRIC_KEYS_SUFFIX);
         sort($keys);
         $gauges = [];
         foreach ($keys as $key) {
-            $raw = $this->redis->hGetAll(str_replace($this->redis->_prefix(''), '', $key));
+            $raw = $this->redis->hGetAll(ltrim($key, $this->redis->_prefix('')));
+            if (!isset($raw['__meta'])) {
+                continue;
+            }
             $gauge = json_decode($raw['__meta'], true);
             unset($raw['__meta']);
             $gauge['samples'] = [];
@@ -586,10 +623,17 @@ LUA
                     'labelValues' => json_decode($k, true),
                     'value' => $value,
                 ];
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $this->throwMetricJsonException($key, $gauge['name']);
+                }
             }
-            usort($gauge['samples'], function ($a, $b): int {
-                return strcmp(implode("", $a['labelValues']), implode("", $b['labelValues']));
-            });
+
+            if ($sortMetrics) {
+                usort($gauge['samples'], function ($a, $b): int {
+                    return strcmp(implode("", $a['labelValues']), implode("", $b['labelValues']));
+                });
+            }
+
             $gauges[] = $gauge;
         }
         return $gauges;
@@ -597,15 +641,20 @@ LUA
 
     /**
      * @return mixed[]
+     * @throws MetricJsonException
      */
-    private function collectCounters(): array
+    private function collectCounters(bool $sortMetrics = true): array
     {
         $keys = $this->redis->sMembers(self::$prefix . Counter::TYPE . self::PROMETHEUS_METRIC_KEYS_SUFFIX);
         sort($keys);
         $counters = [];
         foreach ($keys as $key) {
-            $raw = $this->redis->hGetAll(str_replace($this->redis->_prefix(''), '', $key));
+            $raw = $this->redis->hGetAll(ltrim($key, $this->redis->_prefix('')));
+            if (!isset($raw['__meta'])) {
+                continue;
+            }
             $counter = json_decode($raw['__meta'], true);
+
             unset($raw['__meta']);
             $counter['samples'] = [];
             foreach ($raw as $k => $value) {
@@ -615,10 +664,18 @@ LUA
                     'labelValues' => json_decode($k, true),
                     'value' => $value,
                 ];
+
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $this->throwMetricJsonException($key, $counter['name']);
+                }
             }
-            usort($counter['samples'], function ($a, $b): int {
-                return strcmp(implode("", $a['labelValues']), implode("", $b['labelValues']));
-            });
+
+            if ($sortMetrics) {
+                usort($counter['samples'], function ($a, $b): int {
+                    return strcmp(implode("", $a['labelValues']), implode("", $b['labelValues']));
+                });
+            }
+
             $counters[] = $counter;
         }
         return $counters;
@@ -681,5 +738,18 @@ LUA
             throw new RuntimeException(json_last_error_msg());
         }
         return $decodedValues;
+    }
+
+    /**
+     * @param string $redisKey
+     * @param string|null $metricName
+     * @return void
+     * @throws MetricJsonException
+     */
+    private function throwMetricJsonException(string $redisKey, ?string $metricName = null): void
+    {
+        $metricName = $metricName ?? 'unknown';
+        $message = 'Json error: ' . json_last_error_msg() . ' redis key : ' . $redisKey . ' metric name: ' . $metricName;
+        throw new MetricJsonException($message, 0, null, $metricName);
     }
 }

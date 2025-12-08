@@ -10,6 +10,13 @@ class VIP_Data_Cleanup_Command extends WPCOM_VIP_CLI_Command {
 	 * @subcommand datasync
 	 */
 	public function datasync() {
+		global $wpdb;
+
+		// Ensure all reads go to primary to prevent cache pollution.
+		if ( property_exists( $wpdb, 'srtm' ) ) {
+			$wpdb->srtm = true;
+		}
+
 		$this->cleanup_all_sites( 'datasync' );
 		WP_CLI::success( 'Datasync cleanup completed.' );
 	}
@@ -31,8 +38,19 @@ class VIP_Data_Cleanup_Command extends WPCOM_VIP_CLI_Command {
 		if ( ! is_multisite() ) {
 			$this->cleanup_site( $operation );
 		} else {
-			$sites = get_sites();
-			foreach ( $sites as $site ) {
+			global $wpdb;
+			$iterator_args  = [
+				'table'  => $wpdb->blogs,
+				'where'  => [
+					'spam'     => 0,
+					'deleted'  => 0,
+					'archived' => 0,
+				],
+				'fields' => [ 'blog_id' ],
+			];
+			$sites_iterator = new \WP_CLI\Iterators\Table( $iterator_args );
+
+			foreach ( $sites_iterator as $site ) {
 				switch_to_blog( $site->blog_id );
 
 				$this->cleanup_site( $operation );

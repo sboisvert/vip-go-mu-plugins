@@ -35,7 +35,7 @@ function send_sms( $to, $message ) {
 		$total_messages = count( $message );
 
 		foreach ( $message as $message_split ) {
-			$counter++;
+			++$counter;
 
 			// Add a counter if we're sending more than one message
 			if ( 1 < $total_messages ) {
@@ -43,19 +43,29 @@ function send_sms( $to, $message ) {
 			}
 
 			$body = array(
-				'From' => SMS_FROM_NUMBER,
 				'To'   => $to_number,
 				'Body' => $message_split,
 			);
+			/**
+			 * If defined, we want to use the MessagingServiceSid to leverage all the automatic logic of the messaging service to route the SMS from the right "From" number.
+			 * For example in some countries, the "From" number should be a local number to the recipient or an alphanumeric sender ID.
+			 */
+			if ( defined( 'VIP_TWILIO_MESSAGING_SERVICE_SID' ) ) {
+				$body['MessagingServiceSid'] = VIP_TWILIO_MESSAGING_SERVICE_SID;
+			} else {
+				$body['From'] = SMS_FROM_NUMBER;
+			}
 
 			$result = send_single_sms_via_rest( $body );
 			if ( is_wp_error( $result ) ) {
-				$masked_number = substr( $to_number, 0, ( (int) strlen( $to_number ) / 1.5 ) ) . 'xxx';
+				$masked_number = substr( $to_number, 0, floor( strlen( $to_number ) / 1.5 ) ) . 'xxx';
 				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
 				trigger_error( sprintf( 'Failed to send SMS to %s: %s #vip-go-sms-error', esc_html( $masked_number ), esc_html( $result->get_error_message() ) ), E_USER_WARNING );
+				return $result;
 			}
 		}
 	}
+	return true;
 }
 
 function send_single_sms_via_rest( $body ) {

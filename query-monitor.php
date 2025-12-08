@@ -1,32 +1,6 @@
 <?php
 /**
- * Query Monitor plugin for WordPress
- *
- * @package   query-monitor
- * @link      https://github.com/johnbillion/query-monitor
- * @author    John Blackbourn <john@johnblackbourn.com>
- * @copyright 2009-2022 John Blackbourn
- * @license   GPL v2 or later
- *
- * Plugin Name:  Query Monitor
- * Description:  The developer tools panel for WordPress.
- * Version:      3.10.1
- * Plugin URI:   https://querymonitor.com/
- * Author:       John Blackbourn
- * Author URI:   https://querymonitor.com/
- * Text Domain:  query-monitor
- * Domain Path:  /languages/
- * Requires PHP: 5.6.20
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Integration of the Query Monitor plugin for WordPress
  */
 
 /**
@@ -109,11 +83,34 @@ function wpcom_vip_qm_require() {
 		update_option( 'wpcom_vip_qm_activated', 1, true );
 	}
 
-	// We don't want to share our environment information via Query Monitor
-	remove_filter( 'qm/collectors', 'register_qm_collector_environment', 20, 2 );
-
 	// We know we haven't got the QM DB drop-in in place, so don't show the message
 	add_filter( 'qm/show_extended_query_prompt', '__return_false' );
+
+	/**
+	 * Load QM plugins
+	 */
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-alloptions/qm-alloptions.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-alloptions/qm-alloptions.php';
+	}
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-object-cache/qm-object-cache.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-object-cache/qm-object-cache.php';
+	}
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-apcu-cache/qm-apcu-cache.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-apcu-cache/qm-apcu-cache.php';
+	}
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-cron/qm-cron.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-cron/qm-cron.php';
+	}
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-vip/qm-vip.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-vip/qm-vip.php';
+	}
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-db-connections/qm-db-connections.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-db-connections/qm-db-connections.php';
+	}
+
+	if ( file_exists( __DIR__ . '/qm-plugins/qm-limited-header-php-errors/output/headers/php-errors.php' ) ) {
+		require_once __DIR__ . '/qm-plugins/qm-limited-header-php-errors/output/headers/php-errors.php';
+	}
 }
 add_action( 'plugins_loaded', 'wpcom_vip_qm_require', 1 );
 
@@ -154,15 +151,11 @@ function change_dispatchers_shutdown_priority( array $dispatchers ) {
 }
 add_filter( 'qm/dispatchers', 'change_dispatchers_shutdown_priority', PHP_INT_MAX, 1 );
 
-/**
- * Load QM plugins
- */
-require_once __DIR__ . '/qm-plugins/qm-alloptions/qm-alloptions.php';
-require_once __DIR__ . '/qm-plugins/qm-object-cache/qm-object-cache.php';
-require_once __DIR__ . '/qm-plugins/qm-apcu-cache/qm-apcu-cache.php';
-if ( file_exists( __DIR__ . '/qm-plugins/qm-cron/qm-cron.php' ) ) {
-	require_once __DIR__ . '/qm-plugins/qm-cron/qm-cron.php';
+function include_vip_mu_plugin_component( $file_dirs ) {
+	if ( defined( 'WPVIP_MU_PLUGIN_DIR' ) && WPVIP_MU_PLUGIN_DIR !== WPMU_PLUGIN_DIR ) {
+		$file_dirs['vip-mu-plugin'] = WPVIP_MU_PLUGIN_DIR;
+	}
+
+	return $file_dirs;
 }
-if ( file_exists( __DIR__ . '/qm-plugins/qm-vip/qm-vip.php' ) ) {
-	require_once __DIR__ . '/qm-plugins/qm-vip/qm-vip.php';
-}
+add_filter( 'qm/component_dirs', 'include_vip_mu_plugin_component', PHP_INT_MAX, 1 );

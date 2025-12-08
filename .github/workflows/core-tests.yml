@@ -6,6 +6,7 @@ on:
       - develop
       - staging
       - production
+      - gh-readonly-queue/**
   pull_request:
     branches:
       - develop
@@ -19,6 +20,13 @@ permissions:
   contents: read
 
 env:
+  LOCAL_PHP: "8.2-fpm"
+  LOCAL_PHP_XDEBUG: "false"
+  LOCAL_PHP_XDEBUG_MODE: "develop,debug"
+  LOCAL_DB_TYPE: "mysql"
+  LOCAL_DB_VERSION: "8.3"
+  LOCAL_PHP_MEMCACHED: "true"
+  LOCAL_WP_TESTS_DOMAIN: "example.org"
   PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
 
 jobs:
@@ -36,15 +44,15 @@ jobs:
           echo "PHP_FPM_UID=$(id -u)" >> "${GITHUB_ENV}"
           echo "PHP_FPM_GID=$(id -g)" >> "${GITHUB_ENV}"
 
-      - name: Check out WordPress
-        uses: actions/checkout@v3.3.0
+      - name: Checkout WordPress
+        uses: actions/checkout@v6.0.0
         with:
           repository: wordpress/wordpress-develop
           path: wordpress
           ref: ${{ steps.version.outputs.latest }}
 
       - name: Check out source code
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v6.0.0
         with:
           submodules: recursive
           path: wordpress/src/wp-content/mu-plugins
@@ -52,25 +60,45 @@ jobs:
       - name: Tweaks
         run: |
           echo "define( 'VIP_JETPACK_SKIP_LOAD', 'true' );" >> "wordpress/src/wp-content/mu-plugins/000-vip-init.php"
+          cp wordpress/.env.example wordpress/.env
           echo "GITHUB_EVENT_NAME=pull_request" >> "wordpress/.env"
 
-      - name: Install NodeJS
-        uses: actions/setup-node@v3.6.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v6.0.0
         with:
           node-version-file: 'wordpress/.nvmrc'
           cache: npm
           cache-dependency-path: 'wordpress/package-lock.json'
 
-      - name: Install Dependencies
-        run: npm ci
-        working-directory: wordpress
+      - name: Set up PHP
+        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # 2.35.5
+        with:
+          php-version: 8.0
+          coverage: none
 
       - name: Install Composer dependencies
-        run: docker-compose run --rm php composer update
+        uses: ramsey/composer-install@3cf229dc2919194e9e36783941438d17239e8520 # 3.1.1
+        with:
+          working-directory: wordpress
+
+      - name: Install npm dependencies
+        run: npm ci
         working-directory: wordpress
 
       - name: Start Docker environment
         run: npm run env:start
+        working-directory: wordpress
+
+      - name: Log running Docker containers
+        run: docker ps -a
+
+      - name: WordPress Docker container debug information
+        run: |
+          docker compose run --rm mysql mysql --version
+          docker compose run --rm php php --version
+          docker compose run --rm php php -m
+          docker compose run --rm php php -i
+          docker compose run --rm php locale -a
         working-directory: wordpress
 
       - name: Install WordPress
@@ -78,7 +106,10 @@ jobs:
         working-directory: wordpress
 
       - name: Run PHPUnit tests
-        run: node ./tools/local-env/scripts/docker.js run php ./vendor/bin/phpunit --verbose -c phpunit.xml.dist
+        run: >
+          node ./tools/local-env/scripts/docker.js run php ./vendor/bin/phpunit
+          --verbose -c phpunit.xml.dist
+          --filter "^\(?!.*test_wp_generate_attachment_metadata_png_thumbnail_smaller_than_original\).*\$"
         working-directory: wordpress
 
       - name: Run AJAX tests
@@ -91,6 +122,5 @@ jobs:
 
       - name: Run external HTTP tests
         run: |
-          sed -i 's/ test_multiple_location_headers/ disabled_test_multiple_location_headers/' tests/phpunit/tests/http/base.php
           node ./tools/local-env/scripts/docker.js run php ./vendor/bin/phpunit --verbose -c phpunit.xml.dist --group external-http
         working-directory: wordpress

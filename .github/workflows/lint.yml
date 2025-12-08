@@ -6,6 +6,7 @@ on:
       - develop
       - staging
       - production
+      - gh-readonly-queue/**
   pull_request:
     branches:
       - develop
@@ -24,24 +25,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source code
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v6.0.0
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@2.23.0
+        uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # 2.35.5
         with:
           coverage: none
-          php-version: "8.0"
         env:
           fail-fast: 'true'
 
       - name: Setup Node
-        uses: actions/setup-node@v3.6.0
+        uses: actions/setup-node@v6.0.0
         with:
           node-version: 'lts/*'
           cache: npm
 
       - name: Install PHP Dependencies
-        uses: ramsey/composer-install@2.2.0
+        uses: ramsey/composer-install@3cf229dc2919194e9e36783941438d17239e8520 # 3.1.1
 
       - name: Lint files
         run: npm run lint
@@ -51,10 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source code
-        uses: actions/checkout@v3.3.0
+        uses: actions/checkout@v6.0.0
 
       - name: Setup Node
-        uses: actions/setup-node@v3.6.0
+        uses: actions/setup-node@v6.0.0
         with:
           node-version: 'lts/*'
           cache: npm
